@@ -19,3 +19,31 @@ FROM (
     GROUP BY WELL_ID, PROD_DATE
   ) sub
 ) a
+================
+
+SELECT
+  raw.WELL_ID,
+  raw.PROD_DATE,
+  raw.ON_STREAM_HRS,
+  CASE 
+    WHEN raw.ON_STREAM_HRS > 0 THEN 0
+    ELSE offline.days_since_last_prod
+  END AS days_since_last_prod
+FROM OPGI_DATA_FILTER raw
+LEFT JOIN (
+  SELECT
+    WELL_ID,
+    PROD_DATE,
+    CASE 
+      WHEN MAX(ON_STREAM_HRS) > 0 THEN 0
+      ELSE ROW_NUMBER() OVER (
+        PARTITION BY WELL_ID, 
+                     SUM(CASE WHEN MAX(ON_STREAM_HRS) > 0 THEN 1 ELSE 0 END)
+                     OVER (PARTITION BY WELL_ID ORDER BY PROD_DATE)
+        ORDER BY PROD_DATE
+      )
+    END AS days_since_last_prod
+  FROM OPGI_DATA_FILTER
+  GROUP BY WELL_ID, PROD_DATE
+) offline
+ON raw.WELL_ID = offline.WELL_ID AND raw.PROD_DATE = offline.PROD_DATE
