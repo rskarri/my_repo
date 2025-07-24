@@ -136,5 +136,41 @@ LEFT JOIN (
 ) result
   ON raw.WELL_ID = result.WELL_ID
  AND raw.PROD_DATE = result.PROD_DATE
+=============================================== end
+
+SELECT *,
+  -- Derive active status per your rules
+  CASE
+    WHEN ON_STREAM_HRS > 0 THEN 'AC'
+    WHEN EXISTS (
+      SELECT 1
+      FROM OPGI_DATA_FILTER hist
+      WHERE hist.WELL_ID = f.WELL_ID
+        AND hist.PROD_DATE BETWEEN f.PROD_DATE - INTERVAL '60 DAY' AND f.PROD_DATE - INTERVAL '1 DAY'
+        AND hist.ON_STREAM_HRS > 0
+    ) THEN 'SI'
+    ELSE 'Idle'
+  END AS active_status,
+
+  -- Compute final_active_method (prioritize current, else last known active method)
+  COALESCE(
+    CASE 
+      WHEN ON_STREAM_HRS > 0 THEN METHOD_TYPE
+      ELSE FIRST_VALUE(CASE WHEN ON_STREAM_HRS > 0 THEN METHOD_TYPE END)
+           IGNORE NULLS OVER (
+             PARTITION BY WELL_ID, PROD_DATE
+             ORDER BY ON_STREAM_HRS DESC, METHOD_TYPE
+           )
+    END,
+    LAST_VALUE(CASE WHEN ON_STREAM_HRS > 0 THEN METHOD_TYPE END)
+      IGNORE NULLS OVER (
+        PARTITION BY WELL_ID
+        ORDER BY PROD_DATE
+        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+      )
+  ) AS final_active_method
+
+FROM OPGI_DATA_FILTER f
+
 
 
