@@ -64,3 +64,77 @@ LEFT JOIN (
 ) AGG
 ON A.WELL_ID = AGG.WELL_ID AND A.PROD_DATE = AGG.PROD_DATE
 
+======================================================================================
+
+SELECT
+  raw.WELL_ID,
+  raw.PROD_DATE,
+  raw.ON_STREAM_HRS,
+  raw.METHOD_TYPE,
+
+  -- Days since last production, from your existing logic
+  CASE 
+    WHEN raw.ON_STREAM_HRS > 0 THEN 0
+    ELSE result.days_since_last_prod
+  END AS days_since_last_prod,
+
+  -- 1. WELL_ACTIVE_STATUS logic
+  CASE
+    WHEN raw.ON_STREAM_HRS > 0 THEN 'AC'  -- Active
+    WHEN EXISTS (
+      SELECT 1
+      FROM OPGI_DATA_FILTER hist
+      WHERE hist.WELL_ID = raw.WELL_ID
+        AND hist.PROD_DATE BETWEEN raw.PROD_DATE - INTERVAL '60 DAY' AND raw.PROD_DATE - INTERVAL '1 DAY'
+        AND hist.ON_STREAM_HRS > 0
+    ) THEN 'SI'  -- Shut In
+    ELSE 'Idle'  -- Not active in 60 days
+  END AS WELL_ACTIVE_STATUS,
+
+  -- 2. ACTIVE_METHOD: last known method when well was active
+  CASE
+    WHEN raw.ON_STREAM_HRS > 0 THEN raw.METHOD_TYPE
+    ELSE LAST_VALUE(CASE WHEN raw.ON_STREAM_HRS > 0 THEN raw.METHOD_TYPE END)
+         IGNORE NULLS OVER (
+           PARTITION BY raw.WELL_ID
+           ORDER BY raw.PROD_DATE
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+         )
+  END AS ACTIVE_METHOD
+
+FROM OPGI_DATA_FILTER raw
+
+-- Join to your days_since_last_prod logic
+LEFT JOIN (
+  SELECT
+    WELL_ID,
+    PROD_DATE,
+    CASE 
+      WHEN ON_STREAM_HRS_DAILY > 0 THEN 0
+      ELSE ROW_NUMBER() OVER (
+        PARTITION BY WELL_ID, COALESCE(offline_group, 0)
+        ORDER BY PROD_DATE
+      )
+    END AS days_since_last_prod
+  FROM (
+    SELECT *,
+      SUM(CASE WHEN ON_STREAM_HRS_DAILY > 0 THEN 1 ELSE 0 END)
+        OVER (
+          PARTITION BY WELL_ID 
+          ORDER BY PROD_DATE 
+          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS offline_group
+    FROM (
+      SELECT 
+        WELL_ID,
+        PROD_DATE,
+        MAX(ON_STREAM_HRS) AS ON_STREAM_HRS_DAILY
+      FROM OPGI_DATA_FILTER
+      GROUP BY WELL_ID, PROD_DATE
+    ) daily
+  ) result
+) result
+  ON raw.WELL_ID = result.WELL_ID
+ AND raw.PROD_DATE = result.PROD_DATE
+
+
